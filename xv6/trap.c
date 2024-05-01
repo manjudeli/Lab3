@@ -33,56 +33,10 @@ idtinit(void)
   lidt(idt, sizeof(idt));
 }
 
-// //PAGEBREAK: 41
-// void
-// trap(struct trapframe *tf)
-// {
-//   if(tf->trapno == T_SYSCALL){
-//     if(myproc()->killed)
-//       exit();
-//     myproc()->tf = tf;
-//     syscall();
-//     if(myproc()->killed)
-//       exit();
-//     return;
-//   }
-
-//   switch(tf->trapno){
-//   case T_IRQ0 + IRQ_TIMER:
-//     if(cpuid() == 0){
-//       acquire(&tickslock);
-//       ticks++;
-//       wakeup(&ticks);
-//       release(&tickslock);
-//     }
-//     lapiceoi();
-//     break;
-//   case T_IRQ0 + IRQ_IDE:
-//     ideintr();
-//     lapiceoi();
-//     break;
-//   case T_IRQ0 + IRQ_IDE+1:
-//     // Bochs generates spurious IDE1 interrupts.
-//     break;
-//   case T_IRQ0 + IRQ_KBD:
-//     kbdintr();
-//     lapiceoi();
-//     break;
-//   case T_IRQ0 + IRQ_COM1:
-//     uartintr();
-//     lapiceoi();
-//     break;
-//   case T_IRQ0 + 0xB:
-//     i8254_intr();
-//     lapiceoi();
-//     break;
-//   case T_IRQ0 + IRQ_SPURIOUS:
-//     cprintf("cpu%d: spurious interrupt at %x:%x\n",
-//             cpuid(), tf->cs, tf->eip);
-//     lapiceoi();
-//     break;
-
-void trap(struct trapframe *tf) {
+//PAGEBREAK: 41
+void
+trap(struct trapframe *tf)
+{
   if(tf->trapno == T_SYSCALL){
     if(myproc()->killed)
       exit();
@@ -94,57 +48,39 @@ void trap(struct trapframe *tf) {
   }
 
   switch(tf->trapno){
-    case T_IRQ0 + IRQ_TIMER:
-      if(cpuid() == 0){
-        acquire(&tickslock);
-        ticks++;
-        wakeup(&ticks);
-        release(&tickslock);
-
-        // Call user-level scheduler if defined
-        if(myproc() && myproc()->user_scheduler){
-          myproc()->user_scheduler(); // User-level scheduler function call
-        }
-      }
-      lapiceoi();
-      break;
-    case T_IRQ0 + IRQ_IDE:
-      ideintr();
-      lapiceoi();
-      break;
-    case T_IRQ0 + IRQ_KBD:
-      kbdintr();
-      lapiceoi();
-      break;
-    case T_IRQ0 + IRQ_COM1:
-      uartintr();
-      lapiceoi();
-      break;
-    case T_IRQ0 + IRQ_SPURIOUS:
-      cprintf("cpu%d: spurious interrupt at %x:%x\n",
-              cpuid(), tf->cs, tf->eip);
-      lapiceoi();
-      break;
-    default:
-      if(myproc() == 0 || (tf->cs&3) == 0){
-        cprintf("unexpected trap %d from cpu %d eip %x (cr2=0x%x)\n",
-                tf->trapno, cpuid(), tf->eip, rcr2());
-        panic("trap");
-      }
-      cprintf("pid %d %s: trap %d err %d on cpu %d "
-              "eip 0x%x addr 0x%x--kill proc\n",
-              myproc()->pid, myproc()->name, tf->trapno,
-              tf->err, cpuid(), tf->eip, rcr2());
-      myproc()->killed = 1;
-  }
-
-  // Force process to give up CPU on clock tick.
-  if(myproc() && myproc()->state == RUNNING && tf->trapno == T_IRQ0 + IRQ_TIMER)
-    yield();
-
-  if(myproc() && myproc()->killed && (tf->cs&3) == DPL_USER)
-    exit();
-}
+  case T_IRQ0 + IRQ_TIMER:
+    if(cpuid() == 0){
+      acquire(&tickslock);
+      ticks++;
+      wakeup(&ticks);
+      release(&tickslock);
+    }
+    lapiceoi();
+    break;
+  case T_IRQ0 + IRQ_IDE:
+    ideintr();
+    lapiceoi();
+    break;
+  case T_IRQ0 + IRQ_IDE+1:
+    // Bochs generates spurious IDE1 interrupts.
+    break;
+  case T_IRQ0 + IRQ_KBD:
+    kbdintr();
+    lapiceoi();
+    break;
+  case T_IRQ0 + IRQ_COM1:
+    uartintr();
+    lapiceoi();
+    break;
+  case T_IRQ0 + 0xB:
+    i8254_intr();
+    lapiceoi();
+    break;
+  case T_IRQ0 + IRQ_SPURIOUS:
+    cprintf("cpu%d: spurious interrupt at %x:%x\n",
+            cpuid(), tf->cs, tf->eip);
+    lapiceoi();
+    break;
 
   //PAGEBREAK: 13
   default:

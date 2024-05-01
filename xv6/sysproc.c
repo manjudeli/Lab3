@@ -36,6 +36,17 @@ sys_kill(void)
   return kill(pid);
 }
 
+// sysproc.c
+int
+sys_uthread_init(void)
+{
+    int addr;
+    if(argint(0, &addr) < 0)
+        return -1;
+    myproc()->user_scheduler = (void(*)(void))addr;
+    return 0;
+}
+
 int
 sys_getpid(void)
 {

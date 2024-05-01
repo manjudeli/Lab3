@@ -91,7 +91,7 @@ sys_uptime(void)
 }
 
 int
-sys_uthread_create(void)
+sys_uthread_init(void)
 {
   struct proc *p;
   int func;

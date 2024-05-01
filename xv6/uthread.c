@@ -1,116 +1,116 @@
 #include "types.h"
-#include "stat.h"
-#include "user.h"
+#include "defs.h"
+#include "param.h"
+#include "memlayout.h"
+#include "mmu.h"
+#include "proc.h"
+#include "x86.h"
+#include "traps.h"
+#include "spinlock.h"
+#include "i8254.h"
 
-/* Possible states of a thread; */
-#define FREE        0x0
-#define RUNNING     0x1
-#define RUNNABLE    0x2
+// Interrupt descriptor table (shared by all CPUs).
+struct gatedesc idt[256];
+extern uint vectors[];  // in vectors.S: array of 256 entry pointers
+struct spinlock tickslock;
+uint ticks;
 
-#define STACK_SIZE  8192
-#define MAX_THREAD  4
-
-typedef struct thread thread_t, *thread_p;
-typedef struct mutex mutex_t, *mutex_p;
-
-struct thread {
-  int        sp;                /* saved stack pointer */
-  char stack[STACK_SIZE];       /* the thread's stack */
-  int        state;             /* FREE, RUNNING, RUNNABLE */
-};
-static thread_t all_thread[MAX_THREAD];
-thread_p  current_thread;
-thread_p  next_thread;
-extern void thread_switch(void);
-
-void 
-thread_init(void)
-{
-  // main() is thread 0, which will make the first invocation to
-  // thread_schedule().  it needs a stack so that the first thread_switch() can
-  // save thread 0's state.  thread_schedule() won't run the main thread ever
-  // again, because its state is set to RUNNING, and thread_schedule() selects
-  // a RUNNABLE thread.
-  current_thread = &all_thread[0];
-  current_thread->state = RUNNING;
-  uthread_init(thread_schedule);
-
-}
-
-static void 
-thread_schedule(void)
-{
-  thread_p t;
-
-  /* Find another runnable thread. */
-  next_thread = 0;
-  for (t = all_thread; t < all_thread + MAX_THREAD; t++) {
-    if (t->state == RUNNABLE && t != current_thread) {
-      next_thread = t;
-      break;
-    }
-  }
-
-  if (t >= all_thread + MAX_THREAD && current_thread->state == RUNNABLE) {
-    /* The current thread is the only runnable thread; run it. */
-    next_thread = current_thread;
-  }
-
-  if (next_thread == 0) {
-    printf(2, "thread_schedule: no runnable threads\n");
-    exit();
-  }
-
-  if (current_thread != next_thread) {         /* switch threads?  */
-    next_thread->state = RUNNING;
-    thread_switch();
-  } else
-    next_thread = 0;
-}
-
-void 
-thread_create(void (*func)())
-{
-  thread_p t;
-
-  for (t = all_thread; t < all_thread + MAX_THREAD; t++) {
-    if (t->state == FREE) break;
-  }
-  t->sp = (int) (t->stack + STACK_SIZE);   // set sp to the top of the stack
-  t->sp -= 4;                              // space for return address
-  * (int *) (t->sp) = (int)func;           // push return address on stack
-  t->sp -= 32;                             // space for registers that thread_switch expects
-  t->state = RUNNABLE;
-}
-
-void 
-thread_yield(void)
-{
-  current_thread->state = RUNNABLE;
-  thread_schedule();
-}
-
-static void 
-mythread(void)
+void
+tvinit(void)
 {
   int i;
-  printf(1, "my thread running\n");
-  for (i = 0; i < 100; i++) {
-    printf(1, "my thread 0x%x\n", (int) current_thread);
-    // thread_yield();    
-  }
-  printf(1, "my thread: exit\n");
-  current_thread->state = FREE;
-  thread_schedule();
+
+  for(i = 0; i < 256; i++)
+    SETGATE(idt[i], 0, SEG_KCODE<<3, vectors[i], 0);
+  SETGATE(idt[T_SYSCALL], 1, SEG_KCODE<<3, vectors[T_SYSCALL], DPL_USER);
+
+  initlock(&tickslock, "time");
 }
 
-
-int 
-main(int argc, char *argv[]) 
+void
+idtinit(void)
 {
-  thread_init();
-  thread_create(mythread);
-  thread_create(mythread);
-  thread_schedule();
-  return 0;
+  lidt(idt, sizeof(idt));
+}
+
+//PAGEBREAK: 41
+void
+trap(struct trapframe *tf)
+{
+  if(tf->trapno == T_SYSCALL){
+    if(myproc()->killed)
+      exit();
+    myproc()->tf = tf;
+    syscall();
+    if(myproc()->killed)
+      exit();
+    return;
+  }
+
+  switch(tf->trapno){
+  case T_IRQ0 + IRQ_TIMER:
+    if(cpuid() == 0){
+      acquire(&tickslock);
+      ticks++;
+      wakeup(&ticks);
+      release(&tickslock);
+    }
+    lapiceoi();
+    break;
+  case T_IRQ0 + IRQ_IDE:
+    ideintr();
+    lapiceoi();
+    break;
+  case T_IRQ0 + IRQ_IDE+1:
+    // Bochs generates spurious IDE1 interrupts.
+    break;
+  case T_IRQ0 + IRQ_KBD:
+    kbdintr();
+    lapiceoi();
+    break;
+  case T_IRQ0 + IRQ_COM1:
+    uartintr();
+    lapiceoi();
+    break;
+  case T_IRQ0 + 0xB:
+    i8254_intr();
+    lapiceoi();
+    break;
+  case T_IRQ0 + IRQ_SPURIOUS:
+    cprintf("cpu%d: spurious interrupt at %x:%x\n",
+            cpuid(), tf->cs, tf->eip);
+    lapiceoi();
+    break;
+
+  //PAGEBREAK: 13
+  default:
+    if(myproc() == 0 || (tf->cs&3) == 0){
+      // In kernel, it must be our mistake.
+      cprintf("unexpected trap %d from cpu %d eip %x (cr2=0x%x)\n",
+              tf->trapno, cpuid(), tf->eip, rcr2());
+      panic("trap");
+    }
+    // In user space, assume process misbehaved.
+    cprintf("pid %d %s: trap %d err %d on cpu %d "
+            "eip 0x%x addr 0x%x--kill proc\n",
+            myproc()->pid, myproc()->name, tf->trapno,
+            tf->err, cpuid(), tf->eip, rcr2());
+    myproc()->killed = 1;
+  }
+
+  // Force process exit if it has been killed and is in user space.
+  // (If it is still executing in the kernel, let it keep running
+  // until it gets to the regular system call return.)
+  if(myproc() && myproc()->killed && (tf->cs&3) == DPL_USER)
+    exit();
+
+  // Force process to give up CPU on clock tick.
+  // If interrupts were on while locks held, would need to check nlock.
+  if(myproc() && myproc()->state == RUNNING &&
+     tf->trapno == T_IRQ0+IRQ_TIMER)
+    yield();
+
+  // Check if the process has been killed since we yielded
+  if(myproc() && myproc()->killed && (tf->cs&3) == DPL_USER)
+    exit();
 }
